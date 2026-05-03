@@ -1,0 +1,44 @@
+{
+  "name": "blch-voting-dapp",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "chain": "hardhat node",
+    "deploy:local": "hardhat run scripts/deploy.ts --network localhost",
+    "export:frontend": "TMPDIR=/tmp tsx scripts/export-frontend.ts localhost"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/frithjofhoppe/blch-voting-dapp.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/frithjofhoppe/blch-voting-dapp/issues"
+  },
+  "homepage": "https://github.com/frithjofhoppe/blch-voting-dapp#readme",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-ethers": "^4.0.10",
+    "@nomicfoundation/hardhat-ignition": "^3.1.4",
+    "@nomicfoundation/hardhat-toolbox-mocha-ethers": "^3.0.4",
+    "@types/chai": "^5.2.3",
+    "@types/chai-as-promised": "^8.0.2",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^22.19.17",
+    "chai": "^6.2.2",
+    "ethers": "^6.16.0",
+    "forge-std": "github:foundry-rs/forge-std#v1.9.4",
+    "hardhat": "^3.4.3",
+    "mocha": "^11.7.5",
+    "tsx": "^4.21.0",
+    "typescript": "~5.8.0"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.6.1"
+  }
+}
