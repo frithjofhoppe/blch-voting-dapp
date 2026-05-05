@@ -9,49 +9,44 @@ const [deployer, voterA, voterB, voterC] = await ethers.getSigners();
 console.log(`Deploying contracts to ${networkName}...`);
 console.log(`Deployer: ${deployer.address}`);
 
-const voteToken = await ethers.deployContract("VoteToken", [
+// Deploy BallotManager with deployer as admin
+const ballotManager = await ethers.deployContract("BallotManager", [
   deployer.address,
 ]);
 
-await voteToken.waitForDeployment();
+await ballotManager.waitForDeployment();
 
-const voteTokenAddress = await voteToken.getAddress();
+const ballotManagerAddress = await ballotManager.getAddress();
 
-console.log(`VoteToken deployed to: ${voteTokenAddress}`);
+console.log(`BallotManager deployed to: ${ballotManagerAddress}`);
 
+// Create the first ballot via BallotManager
 const ballotTitle = "Where should we go for the class event?";
 const ballotOptions = ["Bern", "Basel", "Zuerich"];
-const durationInSeconds = 120; // 7 days
+const voters = [voterA.address, voterB.address, voterC.address];
+const durationInSeconds = 120; // 2 minutes for demo
 
-const tokenBallot = await ethers.deployContract("TokenBallot", [
-  voteTokenAddress,
+console.log("Creating first ballot with BallotManager...");
+
+const createBallotTx = await ballotManager.createBallot(
   ballotTitle,
   ballotOptions,
-  durationInSeconds,
-]);
+  voters,
+  durationInSeconds
+);
 
-await tokenBallot.waitForDeployment();
+await createBallotTx.wait();
 
-const tokenBallotAddress = await tokenBallot.getAddress();
+// Get the active ballot address
+const activeBallotAddress = await ballotManager.activeBallot();
 
-console.log(`TokenBallot deployed to: ${tokenBallotAddress}`);
-
-const tokensPerVoter = 1;
-
-console.log("Minting demo vote tokens...");
-
-await (await voteToken.mint(voterA.address, tokensPerVoter)).wait();
-await (await voteToken.mint(voterB.address, tokensPerVoter)).wait();
-await (await voteToken.mint(voterC.address, tokensPerVoter)).wait();
-
-console.log(`Minted ${tokensPerVoter} VOTE to voter A: ${voterA.address}`);
-console.log(`Minted ${tokensPerVoter} VOTE to voter B: ${voterB.address}`);
-console.log(`Minted ${tokensPerVoter} VOTE to voter C: ${voterC.address}`);
+console.log(`TokenBallot created at: ${activeBallotAddress}`);
+console.log(`Voters registered: ${voters.join(", ")}`);
 
 const deployment = {
   network: networkName,
-  voteToken: voteTokenAddress,
-  tokenBallot: tokenBallotAddress,
+  ballotManager: ballotManagerAddress,
+  activeBallot: activeBallotAddress,
   demoAccounts: {
     deployer: deployer.address,
     voterA: voterA.address,
