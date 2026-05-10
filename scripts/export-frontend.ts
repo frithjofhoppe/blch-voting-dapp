@@ -38,17 +38,35 @@ copyAbi("VoteToken.sol", "VoteToken");
 copyAbi("PredictionMarket.sol", "PredictionMarket");
 
 const deploymentPath = path.join(rootDir, "deployments", `${networkName}.json`);
+
+if (!fs.existsSync(deploymentPath)) {
+  throw new Error(
+    `Missing deployment file ${deploymentPath}. Run deploy for ${networkName} before exporting frontend files.`
+  );
+}
+
 const deployment = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
 
 const frontendAddresses = {
+  network: networkName,
   voteToken: deployment.voteToken,
   predictionMarket: deployment.predictionMarket,
   admin: deployment.admin,
 };
 
+const addressJson = JSON.stringify(frontendAddresses, null, 2);
+
+// Keep the network-specific file for traceability/debugging.
 fs.writeFileSync(
   path.join(frontendContractsDir, `addresses.${networkName}.json`),
-  JSON.stringify(frontendAddresses, null, 2)
+  addressJson
 );
 
-console.log(`Frontend contract files written to ${frontendContractsDir}`);
+// The frontend imports this stable file. CI/CD and Docker builds only need to
+// decide which network is exported before building.
+fs.writeFileSync(
+  path.join(frontendContractsDir, "addresses.json"),
+  addressJson
+);
+
+console.log(`Frontend contract files for ${networkName} written to ${frontendContractsDir}`);
