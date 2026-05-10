@@ -1,7 +1,7 @@
 import { Contract, parseEther } from 'ethers'
 import VoteTokenArtifact from '../contracts/VoteToken.json'
 import PredictionMarketArtifact from '../contracts/PredictionMarket.json'
-import Addresses from '../contracts/addresses.localhost.json'
+import Addresses from '../contracts/addresses.json'
 
 type MarketSummary = {
   id: number
