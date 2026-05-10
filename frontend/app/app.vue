@@ -1,96 +1,152 @@
 <script setup lang="ts">
+import { formatEther } from 'ethers'
+import Addresses from './contracts/addresses.localhost.json'
+
+type OutcomeView = {
+  id: number
+  name: string
+  pool: bigint
+  probabilityBps: bigint
+}
+
+type MarketView = {
+  id: number
+  creator: string
+  question: string
+  resolutionContext: string
+  deadline: bigint
+  resolved: boolean
+  winningOutcomeId: bigint
+  totalPool: bigint
+  outcomes: OutcomeView[]
+  claimed: boolean
+}
+
 const { account, chainId, connect, refreshConnection } = useWallet()
-const { 
-  getTokenBallotContract,
-  getActiveBallot,
-  isBallotExpired,
-  getBallotDeadline,
-  createNewBallot,
-  getBallotManagerContract,
-  getVoteTokenForBallot
+const {
+  claimFaucet,
+  getVoteBalance,
+  getAllowance,
+  approvePredictionMarket,
+  createMarket,
+  stake,
+  resolveMarket,
+  claimReward,
+  getMarkets,
+  hasClaimedReward,
+  parseEther,
 } = useContracts()
 
-const tokenBalance = ref<string | null>(null)
-const ballotTitle = ref<string | null>(null)
-const ballotNumber = ref<number>(1)
-const options = ref<{ name: string; votes: string }[]>([])
-const selectedOption = ref<number>(0)
-const status = ref<string>('')
-const isAdmin = ref<boolean>(false)
-const ballotExpired = ref<boolean>(false)
-const deadline = ref<number | null>(null)
-const currentBallotAddress = ref<string | null>(null)
+const status = ref('')
+const loading = ref(false)
+const voteBalance = ref<bigint>(0n)
+const allowance = ref<bigint>(0n)
+const markets = ref<MarketView[]>([])
+const marketStakeInputs = reactive<Record<number, string>>({})
 
-// Create ballot form state
-const showCreateBallotForm = ref<boolean>(false)
-const newBallotTitle = ref<string>('')
-const newBallotOptions = ref<string[]>(['', ''])
-const newBallotVoters = ref<string[]>(['', '', ''])
-const newBallotDuration = ref<number>(120)
-const creatingBallot = ref<boolean>(false)
-const canCreateNewBallot = computed(() => isAdmin.value && ballotExpired.value)
+const marketForm = reactive({
+  question: '',
+  duration: 30,
+  durationUnit: 'minutes' as 'seconds' | 'minutes',
+  resolutionContext: '',
+})
 
-onMounted(() => {
-  void refreshConnection().then((hasAccount) => {
-    if (hasAccount) {
-      void loadDAppData()
+const isAdmin = computed(() => account.value?.toLowerCase() === Addresses.admin.toLowerCase())
+const hasWallet = computed(() => Boolean(account.value))
+
+const formatBps = (value: bigint) => `${(Number(value) / 100).toFixed(2)}%`
+const formatDeadline = (deadline: bigint) => new Date(Number(deadline) * 1000).toLocaleString()
+const formatToken = (value: bigint) => Number(formatEther(value)).toLocaleString(undefined, {
+  maximumFractionDigits: 4,
+})
+
+const marketStatus = (market: MarketView) => {
+  if (market.resolved) {
+    return 'Resolved'
+  }
+
+  const deadlineMs = Number(market.deadline) * 1000
+  return Date.now() >= deadlineMs ? 'Closed' : 'Open'
+}
+
+const marketStatusClass = (market: MarketView) => {
+  const statusLabel = marketStatus(market)
+  if (statusLabel === 'Resolved') {
+    return 'badge-resolved'
+  }
+
+  if (statusLabel === 'Closed') {
+    return 'badge-closed'
+  }
+
+  return 'badge-open'
+}
+
+const winningOutcomeName = (market: MarketView) => {
+  const outcome = market.outcomes.find((candidate) => candidate.id === Number(market.winningOutcomeId))
+  return outcome?.name ?? 'Unknown'
+}
+
+const parseStakeAmount = (marketId: number) => {
+  const rawInput = marketStakeInputs[marketId]
+  const rawValue = typeof rawInput === 'string'
+    ? rawInput.trim()
+    : String(rawInput ?? '').trim()
+
+  if (!rawValue) {
+    throw new Error('Enter a stake amount')
+  }
+
+  return parseEther(rawValue)
+}
+
+const refreshMarkets = async () => {
+  if (!account.value) {
+    markets.value = []
+    return
+  }
+
+  const rawMarkets = await getMarkets()
+  const nextMarkets: MarketView[] = []
+
+  for (const market of rawMarkets) {
+    const claimed = await hasClaimedReward(market.id, account.value)
+
+    nextMarkets.push({
+      ...market,
+      claimed,
+    })
+
+    if (!marketStakeInputs[market.id]) {
+      marketStakeInputs[market.id] = '10'
     }
-  })
-
-  if (account.value) {
-    void loadDAppData()
   }
-})
 
-watch(account, () => {
-  if (account.value) {
-    void loadDAppData()
+  markets.value = nextMarkets
+}
+
+const refreshDashboard = async () => {
+  if (!account.value) {
+    return
   }
-})
-
-const loadDAppData = async () => {
-  if (!account.value) return
 
   try {
-    // Get active ballot from manager
-    const activeBallot = await getActiveBallot()
-    currentBallotAddress.value = activeBallot
+    loading.value = true
+    status.value = ''
 
-    const manager = await getBallotManagerContract()
-    const deadlineValue = await manager.getBallotDeadline(activeBallot)
-    deadline.value = Number(deadlineValue)
+    const [balance, currentAllowance] = await Promise.all([
+      getVoteBalance(account.value),
+      getAllowance(account.value),
+    ])
 
-    // Check if ballot is expired
-    const expired = await isBallotExpired(activeBallot)
-    ballotExpired.value = expired
+    voteBalance.value = balance
+    allowance.value = currentAllowance
 
-    // Check if current account is admin
-    const adminAddress = await manager.admin()
-    isAdmin.value = adminAddress.toLowerCase() === account.value.toLowerCase()
-
-    const voteToken = await getVoteTokenForBallot(activeBallot)
-    const ballot = await getTokenBallotContract(activeBallot)
-
-    const balance = await voteToken.balanceOf(account.value)
-    tokenBalance.value = balance.toString()
-
-    ballotTitle.value = await ballot.title()
-
-    const optionCount = await ballot.getOptionCount()
-    const loadedOptions: { name: string; votes: string }[] = []
-
-    for (let i = 0; i < Number(optionCount); i++) {
-      const option = await ballot.getOption(i)
-
-      loadedOptions.push({
-        name: option[0],
-        votes: option[1].toString()
-      })
-    }
-
-    options.value = loadedOptions
+    await refreshMarkets()
   } catch (error) {
-    status.value = error instanceof Error ? error.message : 'Could not load ballot data'
+    status.value = error instanceof Error ? error.message : 'Failed to load market data'
+  } finally {
+    loading.value = false
   }
 }
 
@@ -98,368 +154,697 @@ const connectWallet = async () => {
   try {
     status.value = 'Connecting wallet...'
     await connect()
-    await loadDAppData()
+    await refreshDashboard()
     status.value = 'Wallet connected.'
   } catch (error) {
     status.value = error instanceof Error ? error.message : 'Could not connect wallet'
   }
 }
 
-const vote = async () => {
+const claimFaucetAction = async () => {
   try {
-    status.value = 'Approving token transfer...'
-
-    const ballotAddress = currentBallotAddress.value
-    if (!ballotAddress) {
-      throw new Error('No active ballot loaded')
-    }
-
-    const voteToken = await getVoteTokenForBallot(ballotAddress)
-    const ballot = await getTokenBallotContract(ballotAddress)
-    const ballotContractAddress = await ballot.getAddress()
-
-    const approveTx = await voteToken.approve(ballotContractAddress, 1)
-    await approveTx.wait()
-
-    status.value = 'Submitting vote...'
-
-    const voteTx = await ballot.vote(selectedOption.value, 1)
-    await voteTx.wait()
-
-    status.value = 'Vote submitted.'
-    await loadDAppData()
+    status.value = 'Claiming faucet...'
+    const tx = await claimFaucet()
+    await tx.wait()
+    status.value = 'Faucet claimed.'
+    await refreshDashboard()
   } catch (error) {
-    status.value = error instanceof Error ? error.message : 'Voting failed'
+    status.value = error instanceof Error ? error.message : 'Could not claim faucet'
   }
 }
 
-const winner = ref<{ index: string; name: string; votes: string } | null>(null)
-
-const loadWinner = async () => {
+const submitMarket = async () => {
   try {
-    if (!ballotExpired.value) {
-      status.value = 'Voting is still open. Wait for the ballot to expire before showing the final result.'
+    if (!marketForm.question.trim()) {
+      status.value = 'Question is required'
       return
     }
 
-    status.value = 'Loading final result...'
-
-    const ballot = await getTokenBallotContract(currentBallotAddress.value!)
-    const result = await ballot.getWinner()
-
-    winner.value = {
-      index: result[0].toString(),
-      name: result[1],
-      votes: result[2].toString()
-    }
-
-    status.value = 'Final result loaded.'
-  } catch (error) {
-    status.value = error instanceof Error
-      ? error.message
-      : 'Could not load winner. Voting may still be open.'
-  }
-}
-
-const addBallotOption = () => {
-  newBallotOptions.value.push('')
-}
-
-const removeBallotOption = (index: number) => {
-  if (newBallotOptions.value.length > 2) {
-    newBallotOptions.value.splice(index, 1)
-  }
-}
-
-const addBallotVoter = () => {
-  newBallotVoters.value.push('')
-}
-
-const removeBallotVoter = (index: number) => {
-  newBallotVoters.value.splice(index, 1)
-}
-
-const submitCreateBallot = async () => {
-  try {
-    // Validate inputs
-    const filledOptions = newBallotOptions.value.filter(opt => opt.trim() !== '')
-    const filledVoters = newBallotVoters.value.filter(voter => voter.trim() !== '')
-
-    if (filledOptions.length < 2) {
-      status.value = 'Please provide at least 2 voting options'
+    if (!marketForm.resolutionContext.trim()) {
+      status.value = 'Resolution context is required'
       return
     }
 
-    if (filledVoters.length < 1) {
-      status.value = 'Please provide at least 1 voter address'
+    const durationInSeconds = marketForm.durationUnit === 'minutes'
+      ? marketForm.duration * 60
+      : marketForm.duration
+
+    if (durationInSeconds <= 0) {
+      status.value = 'Duration must be positive'
       return
     }
 
-    if (newBallotDuration.value <= 0) {
-      status.value = 'Duration must be greater than 0'
-      return
-    }
-
-    creatingBallot.value = true
-    status.value = 'Creating new ballot...'
-
-    const tx = await createNewBallot(
-      newBallotTitle.value || 'New Ballot',
-      filledOptions,
-      filledVoters,
-      newBallotDuration.value
+    status.value = 'Creating market...'
+    const tx = await createMarket(
+      marketForm.question.trim(),
+      ['YES', 'NO'],
+      durationInSeconds,
+      marketForm.resolutionContext.trim()
     )
-
     await tx.wait()
 
-    status.value = 'New ballot created successfully!'
-    showCreateBallotForm.value = false
+    marketForm.question = ''
+    marketForm.duration = 30
+    marketForm.durationUnit = 'minutes'
+    marketForm.resolutionContext = ''
 
-    // Reset form
-    newBallotTitle.value = ''
-    newBallotOptions.value = ['', '']
-    newBallotVoters.value = ['', '', '']
-    newBallotDuration.value = 120
-    ballotNumber.value += 1
-
-    // Reload data
-    await loadDAppData()
+    status.value = 'Market created.'
+    await refreshDashboard()
   } catch (error) {
-    status.value = error instanceof Error ? error.message : 'Failed to create ballot'
-  } finally {
-    creatingBallot.value = false
+    status.value = error instanceof Error ? error.message : 'Could not create market'
   }
 }
+
+const approveForMarket = async (marketId: number) => {
+  try {
+    const amount = parseStakeAmount(marketId)
+    status.value = 'Approving VOTE...'
+    const tx = await approvePredictionMarket(amount)
+    await tx.wait()
+    status.value = 'Allowance approved.'
+    await refreshDashboard()
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : 'Could not approve allowance'
+  }
+}
+
+const stakeOnMarket = async (marketId: number, outcomeId: number) => {
+  try {
+    const amount = parseStakeAmount(marketId)
+
+    if (allowance.value < amount) {
+      status.value = 'Approve VOTE first.'
+      return
+    }
+
+    status.value = `Staking on ${outcomeId === 0 ? 'YES' : 'NO'}...`
+    const tx = await stake(marketId, outcomeId, amount)
+    await tx.wait()
+
+    status.value = 'Stake submitted.'
+    await refreshDashboard()
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : 'Could not place stake'
+  }
+}
+
+const resolveMarketAs = async (marketId: number, winningOutcomeId: number) => {
+  try {
+    status.value = 'Resolving market...'
+    const tx = await resolveMarket(marketId, winningOutcomeId)
+    await tx.wait()
+    status.value = 'Market resolved.'
+    await refreshDashboard()
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : 'Could not resolve market'
+  }
+}
+
+const claimMarketReward = async (marketId: number) => {
+  try {
+    status.value = 'Claiming reward...'
+    const tx = await claimReward(marketId)
+    await tx.wait()
+    status.value = 'Reward claimed.'
+    await refreshDashboard()
+  } catch (error) {
+    status.value = error instanceof Error ? error.message : 'Could not claim reward'
+  }
+}
+
+onMounted(async () => {
+  const connected = await refreshConnection()
+  if (connected) {
+    await refreshDashboard()
+  }
+})
+
+watch(account, async () => {
+  if (account.value) {
+    await refreshDashboard()
+  }
+})
 </script>
 
 <template>
-  <main class="min-h-screen bg-slate-950 text-white p-8">
-    <section class="mx-auto max-w-3xl space-y-8">
-      <header>
-        <h1 class="text-3xl font-bold">
-          Token Voting DApp
-        </h1>
-        <p class="mt-2 text-slate-300">
-          Connect MetaMask, check your VOTE balance, and vote for one option.
-        </p>
-      </header>
+  <main class="shell">
+    <div class="orb orb-one"></div>
+    <div class="orb orb-two"></div>
 
-      <section class="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-4">
-        <button
-          class="rounded-lg bg-white px-4 py-2 font-medium text-slate-950"
-          @click="connectWallet"
-        >
-          Connect MetaMask
-        </button>
-
-        <div v-if="account" class="space-y-1 text-sm text-slate-300">
-          <p><strong>Account:</strong> {{ account }}</p>
-          <p><strong>Chain ID:</strong> {{ chainId }}</p>
-          <p><strong>VOTE balance:</strong> {{ tokenBalance }}</p>
-        </div>
-      </section>
-
-      <section
-        v-if="ballotTitle"
-        class="rounded-xl border border-slate-800 bg-slate-900 p-6 space-y-4"
-      >
-        <div class="flex items-center justify-between">
-          <div>
-            <h2 class="text-2xl font-semibold">
-              Ballot #{{ ballotNumber }}
-            </h2>
-            <p class="text-sm text-slate-400">{{ ballotTitle }}</p>
-          </div>
-          <div v-if="ballotExpired" class="px-3 py-1 rounded-full bg-red-900 text-red-200 text-sm font-medium">
-            Expired
-          </div>
-          <div v-else class="px-3 py-1 rounded-full bg-green-900 text-green-200 text-sm font-medium">
-            Voting Open
-          </div>
-        </div>
-
-        <p class="text-sm text-slate-400">
-          Deadline: {{ deadline ? new Date(deadline * 1000).toLocaleString() : 'Unknown' }}
-        </p>
-
-        <div class="space-y-3">
-          <label
-            v-for="(option, index) in options"
-            :key="option.name"
-            class="flex cursor-pointer items-center justify-between rounded-lg border border-slate-700 p-4 hover:bg-slate-800"
-            :class="{ 'opacity-50 cursor-not-allowed': ballotExpired }"
-          >
-            <div class="flex items-center gap-3">
-              <input
-                v-model="selectedOption"
-                type="radio"
-                :value="index"
-                :disabled="ballotExpired"
-              >
-              <span>{{ option.name }}</span>
-            </div>
-
-            <span class="text-slate-400">
-              {{ option.votes }} votes
-            </span>
-          </label>
-        </div>
-
-        <button
-          v-if="!ballotExpired"
-          class="rounded-lg bg-emerald-400 px-4 py-2 font-medium text-slate-950 hover:bg-emerald-300"
-          @click="vote"
-        >
-          Vote with 1 VOTE
-        </button>
-        <p v-else class="text-sm text-slate-400">
-          Voting is closed for this ballot.
-        </p>
-      </section>
-
-      <!-- Admin create ballot button -->
-      <section v-if="isAdmin" class="rounded-xl border border-orange-800 bg-orange-900 bg-opacity-20 p-6 space-y-4">
-        <h3 class="text-lg font-semibold text-orange-300">Admin Controls</h3>
-        <p v-if="ballotExpired" class="text-sm text-slate-300">The current ballot has expired. You can create a new one.</p>
-        <p v-else class="text-sm text-slate-300">The current ballot is still open. New ballot creation becomes available after expiry.</p>
-        <button
-          v-if="!showCreateBallotForm"
-          :disabled="!canCreateNewBallot"
-          class="rounded-lg bg-orange-500 px-4 py-2 font-medium text-slate-950 hover:bg-orange-400"
-          @click="showCreateBallotForm = true"
-        >
-          {{ canCreateNewBallot ? 'Create New Ballot' : 'Create New Ballot (locked until expiry)' }}
-        </button>
-
-        <!-- Create ballot form -->
-        <div v-if="showCreateBallotForm && canCreateNewBallot" class="space-y-4 mt-4">
-          <div>
-            <label class="block text-sm font-medium mb-1">Ballot Title</label>
-            <input
-              v-model="newBallotTitle"
-              type="text"
-              placeholder="Enter ballot title"
-              class="w-full rounded-lg bg-slate-800 text-white px-3 py-2 border border-slate-700"
-            >
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium mb-2">Voting Options</label>
-            <div class="space-y-2">
-              <div
-                v-for="(option, index) in newBallotOptions"
-                :key="index"
-                class="flex gap-2"
-              >
-                <input
-                  v-model="newBallotOptions[index]"
-                  type="text"
-                  :placeholder="`Option ${index + 1}`"
-                  class="flex-1 rounded-lg bg-slate-800 text-white px-3 py-2 border border-slate-700"
-                >
-                <button
-                  v-if="newBallotOptions.length > 2"
-                  @click="removeBallotOption(index)"
-                  class="rounded-lg bg-red-700 px-3 py-2 hover:bg-red-600"
-                >
-                  Remove
-                </button>
-              </div>
-            </div>
-            <button
-              @click="addBallotOption"
-              class="mt-2 rounded-lg bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600"
-            >
-              + Add Option
-            </button>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium mb-2">Voter Addresses</label>
-            <div class="space-y-2">
-              <div
-                v-for="(voter, index) in newBallotVoters"
-                :key="index"
-                class="flex gap-2"
-              >
-                <input
-                  v-model="newBallotVoters[index]"
-                  type="text"
-                  placeholder="0x..."
-                  class="flex-1 rounded-lg bg-slate-800 text-white px-3 py-2 border border-slate-700 text-sm font-mono"
-                >
-                <button
-                  v-if="newBallotVoters.length > 1"
-                  @click="removeBallotVoter(index)"
-                  class="rounded-lg bg-red-700 px-3 py-2 hover:bg-red-600"
-                >
-                  Remove
-                </button>
-              </div>
-            </div>
-            <button
-              @click="addBallotVoter"
-              class="mt-2 rounded-lg bg-slate-700 px-3 py-1 text-sm hover:bg-slate-600"
-            >
-              + Add Voter
-            </button>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium mb-1">Voting Duration (seconds)</label>
-            <input
-              v-model.number="newBallotDuration"
-              type="number"
-              min="1"
-              class="w-full rounded-lg bg-slate-800 text-white px-3 py-2 border border-slate-700"
-            >
-          </div>
-
-          <div class="flex gap-2 pt-2">
-            <button
-              :disabled="creatingBallot"
-              class="flex-1 rounded-lg bg-orange-500 px-4 py-2 font-medium text-slate-950 hover:bg-orange-400 disabled:opacity-50"
-              @click="submitCreateBallot"
-            >
-              {{ creatingBallot ? 'Creating...' : 'Create Ballot' }}
-            </button>
-            <button
-              :disabled="creatingBallot"
-              class="rounded-lg bg-slate-700 px-4 py-2 hover:bg-slate-600 disabled:opacity-50"
-              @click="showCreateBallotForm = false"
-            >
-              Cancel
-            </button>
-          </div>
-        </div>
-      </section>
-
-      <p
-        v-if="status"
-        class="rounded-xl border border-slate-800 bg-slate-900 p-4 text-sm text-slate-300"
-      >
-        {{ status }}
-      </p>
-
-      <button
-        :disabled="!ballotExpired"
-        class="rounded-lg bg-blue-400 px-4 py-2 font-medium text-slate-950 hover:bg-blue-300"
-        @click="loadWinner"
-      >
-        {{ ballotExpired ? 'Show final result' : 'Show final result (available after expiry)' }}
-      </button>
-
-      <div
-        v-if="winner"
-        class="rounded-lg border border-blue-400 bg-blue-950 p-4"
-      >
-        <p class="font-semibold">
-          Winner: {{ winner.name }}
-        </p>
-        <p class="text-sm text-slate-300">
-          Option #{{ winner.index }} with {{ winner.votes }} votes.
+    <section class="hero panel">
+      <div class="hero-copy">
+        <p class="eyebrow">Simplified prediction market</p>
+        <h1>Shared VOTE, pooled outcomes, and admin resolution.</h1>
+        <p class="lede">
+          Claim VOTE from the faucet, create a market, stake on YES or NO, and let the admin resolve after the deadline.
+          Probabilities come directly from the pool split.
         </p>
       </div>
+
+      <div class="wallet-card">
+        <div class="wallet-head">
+          <span class="wallet-label">Wallet</span>
+          <span class="network-pill">Hardhat localhost</span>
+        </div>
+
+        <button class="primary-button" @click="connectWallet">
+          {{ hasWallet ? 'Reconnect Wallet' : 'Connect Wallet' }}
+        </button>
+
+        <div v-if="account" class="wallet-meta">
+          <p><span>Address</span><strong>{{ account }}</strong></p>
+          <p><span>Chain</span><strong>{{ chainId }}</strong></p>
+          <p><span>VOTE balance</span><strong>{{ formatToken(voteBalance) }}</strong></p>
+          <p><span>Allowance</span><strong>{{ formatToken(allowance) }}</strong></p>
+        </div>
+
+        <button v-if="account" class="secondary-button" @click="claimFaucetAction">
+          Claim 1000 VOTE
+        </button>
+      </div>
     </section>
+
+    <section class="panel form-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Create market</p>
+          <h2>YES / NO demo market</h2>
+        </div>
+        <button class="ghost-button" @click="refreshDashboard" :disabled="loading || !account">
+          Refresh
+        </button>
+      </div>
+
+      <div class="form-grid">
+        <label>
+          <span>Question</span>
+          <input v-model="marketForm.question" type="text" placeholder="Will ETH be above 5000 USD on 01.07.2026?" />
+        </label>
+
+        <label>
+          <span>Duration</span>
+          <div class="inline-fields">
+            <input v-model.number="marketForm.duration" type="number" min="1" />
+            <select v-model="marketForm.durationUnit">
+              <option value="seconds">Seconds</option>
+              <option value="minutes">Minutes</option>
+            </select>
+          </div>
+        </label>
+      </div>
+
+      <label>
+        <span>Resolution context</span>
+        <textarea
+          v-model="marketForm.resolutionContext"
+          rows="4"
+          placeholder="Resolve YES if the source price is above the threshold at the deadline."
+        ></textarea>
+      </label>
+
+      <div class="form-actions">
+        <button class="primary-button" @click="submitMarket" :disabled="!account">
+          Create Market
+        </button>
+        <p class="hint">Outcomes are fixed to YES and NO for the MVP.</p>
+      </div>
+    </section>
+
+    <section class="panel market-panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Markets</p>
+          <h2>All live and resolved markets</h2>
+        </div>
+        <p class="hint">Admin: {{ Addresses.admin }}</p>
+      </div>
+
+      <div v-if="!account" class="empty-state">
+        Connect a wallet to load markets, balances, and staking actions.
+      </div>
+
+      <div v-else-if="markets.length === 0" class="empty-state">
+        No markets yet. Create the first one above.
+      </div>
+
+      <div v-else class="market-list">
+        <article v-for="market in markets" :key="market.id" class="market-card">
+          <div class="market-top">
+            <div>
+              <p class="market-id">Market #{{ market.id }}</p>
+              <h3>{{ market.question }}</h3>
+            </div>
+            <span class="status-pill" :class="marketStatusClass(market)">
+              {{ marketStatus(market) }}
+            </span>
+          </div>
+
+          <p class="context">{{ market.resolutionContext }}</p>
+
+          <div class="meta-grid">
+            <div>
+              <span>Total pool</span>
+              <strong>{{ formatToken(market.totalPool) }} VOTE</strong>
+            </div>
+            <div>
+              <span>Deadline</span>
+              <strong>{{ formatDeadline(market.deadline) }}</strong>
+            </div>
+            <div>
+              <span>Creator</span>
+              <strong>{{ market.creator }}</strong>
+            </div>
+            <div v-if="market.resolved">
+              <span>Winner</span>
+              <strong>{{ winningOutcomeName(market) }}</strong>
+            </div>
+          </div>
+
+          <div class="outcomes-grid">
+            <div v-for="outcome in market.outcomes" :key="outcome.id" class="outcome-card">
+              <div class="outcome-head">
+                <strong>{{ outcome.name }}</strong>
+                <span>{{ formatBps(outcome.probabilityBps) }}</span>
+              </div>
+              <p>{{ formatToken(outcome.pool) }} VOTE pooled</p>
+            </div>
+          </div>
+
+          <div class="stake-block">
+            <label>
+              <span>Stake amount</span>
+              <input
+                v-model="marketStakeInputs[market.id]"
+                type="number"
+                min="0"
+                step="0.01"
+                inputmode="decimal"
+              />
+            </label>
+
+            <div class="action-row">
+              <button class="secondary-button" @click="approveForMarket(market.id)">
+                Approve VOTE
+              </button>
+              <button class="primary-button" @click="stakeOnMarket(market.id, 0)">
+                Stake YES
+              </button>
+              <button class="primary-button" @click="stakeOnMarket(market.id, 1)">
+                Stake NO
+              </button>
+            </div>
+          </div>
+
+          <div v-if="isAdmin && !market.resolved" class="resolve-block">
+            <button class="secondary-button" @click="resolveMarketAs(market.id, 0)">
+              Resolve as YES
+            </button>
+            <button class="secondary-button" @click="resolveMarketAs(market.id, 1)">
+              Resolve as NO
+            </button>
+          </div>
+
+          <div v-if="market.resolved" class="claim-block">
+            <span v-if="market.claimed" class="claimed-pill">Reward claimed</span>
+            <button v-else class="primary-button" @click="claimMarketReward(market.id)">
+              Claim reward
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <p class="status-line" v-if="status">{{ status }}</p>
   </main>
 </template>
+
+<style scoped>
+:global(body) {
+  margin: 0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(250, 204, 21, 0.16), transparent 34%),
+    radial-gradient(circle at top right, rgba(56, 189, 248, 0.18), transparent 30%),
+    linear-gradient(180deg, #07111f 0%, #0b1628 50%, #050b14 100%);
+  color: #edf3ff;
+  font-family: 'Trebuchet MS', 'Segoe UI', sans-serif;
+}
+
+.shell {
+  position: relative;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 32px 20px 60px;
+}
+
+.orb {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(20px);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.orb-one {
+  top: 60px;
+  left: -120px;
+  width: 220px;
+  height: 220px;
+  background: rgba(250, 204, 21, 0.25);
+}
+
+.orb-two {
+  right: -80px;
+  top: 240px;
+  width: 180px;
+  height: 180px;
+  background: rgba(56, 189, 248, 0.22);
+}
+
+.panel {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(8, 15, 28, 0.78);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(14px);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.9fr);
+  gap: 24px;
+  padding: 28px;
+  border-radius: 28px;
+  margin-bottom: 20px;
+}
+
+.hero-copy h1 {
+  margin: 10px 0 12px;
+  font-size: clamp(2.4rem, 5vw, 4.4rem);
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+  max-width: 11ch;
+}
+
+.lede {
+  max-width: 58ch;
+  margin: 0;
+  color: #c8d3e3;
+  line-height: 1.6;
+}
+
+.eyebrow {
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.22em;
+  font-size: 0.74rem;
+  color: #fbbf24;
+}
+
+.wallet-card,
+.form-panel,
+.market-panel {
+  border-radius: 24px;
+  padding: 22px;
+}
+
+.wallet-card {
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.92), rgba(3, 7, 18, 0.9));
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.wallet-head,
+.section-head,
+.market-top,
+.outcome-head,
+.form-actions,
+.action-row,
+.resolve-block,
+.claim-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.wallet-label,
+.market-id,
+.context,
+.hint,
+.meta-grid span,
+.wallet-meta span {
+  color: #8ea0bb;
+}
+
+.wallet-meta {
+  display: grid;
+  gap: 10px;
+}
+
+.wallet-meta p,
+.meta-grid div,
+.outcome-card p {
+  margin: 0;
+}
+
+.wallet-meta strong,
+.meta-grid strong {
+  display: block;
+  margin-top: 3px;
+  color: #eef5ff;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.network-pill,
+.status-pill,
+.claimed-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.network-pill {
+  background: rgba(56, 189, 248, 0.14);
+  color: #8edcf8;
+}
+
+.status-pill {
+  min-width: 84px;
+  justify-content: center;
+}
+
+.badge-open {
+  background: rgba(34, 197, 94, 0.14);
+  color: #8df0ab;
+}
+
+.badge-closed {
+  background: rgba(250, 204, 21, 0.14);
+  color: #f7db78;
+}
+
+.badge-resolved {
+  background: rgba(168, 85, 247, 0.16);
+  color: #d8b4fe;
+}
+
+.primary-button,
+.secondary-button,
+.ghost-button {
+  border: 0;
+  border-radius: 14px;
+  padding: 12px 16px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s ease, opacity 0.2s ease, background 0.2s ease;
+}
+
+.primary-button:hover,
+.secondary-button:hover,
+.ghost-button:hover {
+  transform: translateY(-1px);
+}
+
+.primary-button {
+  background: linear-gradient(135deg, #fbbf24, #fb7185);
+  color: #0b1020;
+}
+
+.secondary-button {
+  background: rgba(148, 163, 184, 0.14);
+  color: #edf3ff;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.ghost-button {
+  background: transparent;
+  color: #d7e2f2;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+}
+
+.primary-button:disabled,
+.secondary-button:disabled,
+.ghost-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.form-panel,
+.market-panel {
+  margin-top: 20px;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: 1.6fr 0.8fr;
+  gap: 14px;
+  margin: 18px 0 14px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+input,
+select,
+textarea {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.78);
+  color: #edf3ff;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid rgba(251, 191, 36, 0.36);
+  outline-offset: 2px;
+}
+
+.inline-fields {
+  display: grid;
+  grid-template-columns: 1fr 0.8fr;
+  gap: 10px;
+}
+
+.form-actions {
+  margin-top: 16px;
+  align-items: center;
+  justify-content: flex-start;
+}
+
+.empty-state {
+  padding: 20px 0 6px;
+  color: #a8b7cd;
+}
+
+.market-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.market-card {
+  border-radius: 22px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  background: rgba(11, 18, 32, 0.84);
+  padding: 18px;
+}
+
+.market-card h3 {
+  margin: 8px 0 0;
+  font-size: 1.35rem;
+  line-height: 1.2;
+}
+
+.context {
+  margin: 14px 0 0;
+  line-height: 1.55;
+}
+
+.meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.meta-grid div,
+.outcome-card,
+.stake-block,
+.resolve-block,
+.claim-block {
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(15, 23, 42, 0.58);
+  padding: 14px;
+}
+
+.outcomes-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.outcome-head span {
+  color: #f5d06a;
+  font-weight: 700;
+}
+
+.stake-block {
+  margin-top: 14px;
+}
+
+.stake-block label {
+  margin-bottom: 14px;
+}
+
+.action-row,
+.resolve-block,
+.claim-block {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.claimed-pill {
+  background: rgba(34, 197, 94, 0.14);
+  color: #8df0ab;
+}
+
+.status-line {
+  margin: 18px 4px 0;
+  color: #f8d57a;
+}
+
+@media (max-width: 920px) {
+  .hero,
+  .form-grid,
+  .outcomes-grid,
+  .meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .hero {
+    padding: 22px;
+  }
+}
+</style>
