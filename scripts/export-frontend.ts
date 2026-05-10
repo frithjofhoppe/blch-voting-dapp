@@ -35,14 +35,20 @@ function copyAbi(contractFileName: string, contractName: string) {
 }
 
 copyAbi("VoteToken.sol", "VoteToken");
-copyAbi("TokenBallot.sol", "TokenBallot");
+copyAbi("PredictionMarket.sol", "PredictionMarket");
 
 const deploymentPath = path.join(rootDir, "deployments", `${networkName}.json`);
 const deployment = JSON.parse(fs.readFileSync(deploymentPath, "utf8"));
 
+const frontendAddresses = {
+  voteToken: deployment.voteToken,
+  predictionMarket: deployment.predictionMarket,
+  admin: deployment.admin,
+};
+
 fs.writeFileSync(
   path.join(frontendContractsDir, `addresses.${networkName}.json`),
-  JSON.stringify(deployment, null, 2)
+  JSON.stringify(frontendAddresses, null, 2)
 );
 
 console.log(`Frontend contract files written to ${frontendContractsDir}`);
