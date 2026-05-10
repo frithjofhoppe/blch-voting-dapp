@@ -11,18 +11,18 @@ RUN npm ci
 
 COPY frontend ./
 
-# The app currently imports app/contracts/addresses.localhost.json statically.
-# To build an image for Sepolia, first run the Sepolia export and then build with:
-#   docker build --build-arg CONTRACT_NETWORK=sepolia -t blch-voting-dapp:sepolia .
+# The frontend imports app/contracts/addresses.json. The export script writes
+# that stable file for the selected network. Keep this check so CI fails early
+# when the deployment/export step was skipped.
 ARG CONTRACT_NETWORK=localhost
-RUN if [ -f "app/contracts/addresses.${CONTRACT_NETWORK}.json" ]; then \
-      cp "app/contracts/addresses.${CONTRACT_NETWORK}.json" app/contracts/addresses.localhost.json; \
-    else \
-      echo "Missing app/contracts/addresses.${CONTRACT_NETWORK}.json"; \
-      echo "Run the deployment/export step for ${CONTRACT_NETWORK} before building the image."; \
+RUN if [ ! -f "app/contracts/addresses.json" ]; then \
+      echo "Missing app/contracts/addresses.json"; \
+      echo "Run: npm run export:frontend:<network> before building the image."; \
       find app/contracts -maxdepth 1 -type f -print || true; \
       exit 1; \
-    fi
+    fi && \
+    echo "Building frontend with contract config:" && \
+    cat app/contracts/addresses.json
 
 RUN npm run build
 
