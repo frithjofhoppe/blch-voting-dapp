@@ -4,7 +4,7 @@ import path from "node:path";
 
 const { ethers, networkName } = await network.create();
 
-const [deployer, userA, userB, userC] = await ethers.getSigners();
+const [deployer] = await ethers.getSigners();
 
 console.log(`Deploying contracts to ${networkName}...`);
 console.log(`Deployer: ${deployer.address}`);
@@ -32,13 +32,7 @@ const deployment = {
   network: networkName,
   voteToken: voteTokenAddress,
   predictionMarket: predictionMarketAddress,
-  admin: deployer.address,
-  demoAccounts: {
-    deployer: deployer.address,
-    userA: userA.address,
-    userB: userB.address,
-    userC: userC.address,
-  },
+  admin: deployer.address
 };
 
 const deploymentsDir = path.join(process.cwd(), "deployments");
