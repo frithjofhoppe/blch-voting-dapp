@@ -38,9 +38,11 @@ ENV NODE_ENV=production \
 COPY --from=build /src/frontend/.output ./.output
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+# Normalize CRLF line endings in case the file was edited on Windows/WSL.
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh && \
+    chmod +x /usr/local/bin/docker-entrypoint.sh
 
 EXPOSE 3000
 
-ENTRYPOINT ["docker-entrypoint.sh"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", ".output/server/index.mjs"]
