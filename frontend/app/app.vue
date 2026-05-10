@@ -22,6 +22,16 @@ type MarketView = {
   claimed: boolean
 }
 
+type NotificationTone = 'info' | 'success' | 'error'
+
+type NotificationEntry = {
+  id: number
+  message: string
+  tone: NotificationTone
+  createdAt: number
+  seen: boolean
+}
+
 const { account, chainId, connect, refreshConnection } = useWallet()
 const {
   claimFaucet,
@@ -43,6 +53,105 @@ const voteBalance = ref<bigint>(0n)
 const allowance = ref<bigint>(0n)
 const markets = ref<MarketView[]>([])
 const marketStakeInputs = reactive<Record<number, string>>({})
+const notifications = ref<NotificationEntry[]>([])
+const showNotificationPanel = ref(false)
+const toastVisible = ref(false)
+const toastMessage = ref('')
+
+const unreadNotificationCount = computed(() => {
+  return notifications.value.filter((entry) => !entry.seen).length
+})
+
+let notificationId = 1
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+const getNotificationTone = (message: string): NotificationTone => {
+  const normalized = message.toLowerCase()
+
+  if (
+    normalized.includes('could not') ||
+    normalized.includes('failed') ||
+    normalized.includes('error') ||
+    normalized.includes('required') ||
+    normalized.includes('invalid')
+  ) {
+    return 'error'
+  }
+
+  if (
+    normalized.includes('connected') ||
+    normalized.includes('claimed') ||
+    normalized.includes('created') ||
+    normalized.includes('approved') ||
+    normalized.includes('submitted') ||
+    normalized.includes('resolved')
+  ) {
+    return 'success'
+  }
+
+  return 'info'
+}
+
+const showToast = (message: string) => {
+  toastMessage.value = message
+  toastVisible.value = true
+
+  if (toastTimer) {
+    clearTimeout(toastTimer)
+  }
+
+  toastTimer = setTimeout(() => {
+    toastVisible.value = false
+  }, 2800)
+}
+
+const pushNotification = (message: string) => {
+  const trimmed = message.trim()
+  if (!trimmed) {
+    return
+  }
+
+  notifications.value.unshift({
+    id: notificationId,
+    message: trimmed,
+    tone: getNotificationTone(trimmed),
+    createdAt: Date.now(),
+    seen: false,
+  })
+  notificationId += 1
+
+  if (notifications.value.length > 50) {
+    notifications.value.length = 50
+  }
+
+  showToast(trimmed)
+}
+
+const clearNotificationHistory = () => {
+  notifications.value = []
+}
+
+const markNotificationsSeen = () => {
+  notifications.value = notifications.value.map((entry) => ({
+    ...entry,
+    seen: true,
+  }))
+}
+
+const toggleNotifications = () => {
+  showNotificationPanel.value = !showNotificationPanel.value
+  if (showNotificationPanel.value) {
+    markNotificationsSeen()
+  }
+}
+
+const closeNotifications = () => {
+  showNotificationPanel.value = false
+}
+
+const formatNotificationTime = (value: number) => {
+  return new Date(value).toLocaleTimeString()
+}
 
 const marketForm = reactive({
   question: '',
@@ -85,6 +194,10 @@ const marketStatusClass = (market: MarketView) => {
 const winningOutcomeName = (market: MarketView) => {
   const outcome = market.outcomes.find((candidate) => candidate.id === Number(market.winningOutcomeId))
   return outcome?.name ?? 'Unknown'
+}
+
+const marketIsInactive = (market: MarketView) => {
+  return market.resolved || marketStatus(market) === 'Closed'
 }
 
 const parseStakeAmount = (marketId: number) => {
@@ -279,8 +392,26 @@ onMounted(async () => {
   }
 })
 
-watch(account, async () => {
-  if (account.value) {
+watch(status, (nextStatus, previousStatus) => {
+  if (!nextStatus || nextStatus === previousStatus) {
+    return
+  }
+
+  pushNotification(nextStatus)
+})
+
+watch(account, async (nextAccount, previousAccount) => {
+  const switchedAccount =
+    !!nextAccount &&
+    !!previousAccount &&
+    nextAccount.toLowerCase() !== previousAccount.toLowerCase()
+
+  if (switchedAccount || (!nextAccount && !!previousAccount)) {
+    clearNotificationHistory()
+    showNotificationPanel.value = false
+  }
+
+  if (nextAccount) {
     await refreshDashboard()
   }
 })
@@ -304,7 +435,19 @@ watch(account, async () => {
       <div class="wallet-card">
         <div class="wallet-head">
           <span class="wallet-label">Wallet</span>
-          <span class="network-pill">Hardhat localhost</span>
+          <div class="wallet-right">
+            <span class="network-pill">Hardhat localhost</span>
+            <button
+              v-if="account"
+              class="bell-button"
+              @click="toggleNotifications"
+              title="Notification history"
+              aria-label="Notification history"
+            >
+              <span>🔔</span>
+              <span v-if="unreadNotificationCount > 0" class="bell-badge">{{ unreadNotificationCount }}</span>
+            </button>
+          </div>
         </div>
 
         <button class="primary-button" @click="connectWallet">
@@ -318,13 +461,13 @@ watch(account, async () => {
           <p><span>Allowance</span><strong>{{ formatToken(allowance) }}</strong></p>
         </div>
 
-        <button v-if="account" class="secondary-button" @click="claimFaucetAction">
+        <button v-if="account && !isAdmin" class="secondary-button" @click="claimFaucetAction">
           Claim 1000 VOTE
         </button>
       </div>
     </section>
 
-    <section class="panel form-panel">
+    <section v-if="!isAdmin" class="panel form-panel">
       <div class="section-head">
         <div>
           <p class="eyebrow">Create market</p>
@@ -430,7 +573,7 @@ watch(account, async () => {
             </div>
           </div>
 
-          <div class="stake-block">
+          <div v-if="!isAdmin" class="stake-block">
             <label>
               <span>Stake amount</span>
               <input
@@ -439,17 +582,33 @@ watch(account, async () => {
                 min="0"
                 step="0.01"
                 inputmode="decimal"
+                :disabled="marketIsInactive(market)"
               />
             </label>
 
             <div class="action-row">
-              <button class="secondary-button" @click="approveForMarket(market.id)">
+              <button
+                class="secondary-button"
+                @click="approveForMarket(market.id)"
+                :disabled="marketIsInactive(market)"
+                :title="marketIsInactive(market) ? 'Market closed or resolved' : 'Approve VOTE'"
+              >
                 Approve VOTE
               </button>
-              <button class="primary-button" @click="stakeOnMarket(market.id, 0)">
+              <button
+                class="primary-button"
+                @click="stakeOnMarket(market.id, 0)"
+                :disabled="marketIsInactive(market)"
+                :title="marketIsInactive(market) ? 'Market closed or resolved' : 'Stake YES'"
+              >
                 Stake YES
               </button>
-              <button class="primary-button" @click="stakeOnMarket(market.id, 1)">
+              <button
+                class="primary-button"
+                @click="stakeOnMarket(market.id, 1)"
+                :disabled="marketIsInactive(market)"
+                :title="marketIsInactive(market) ? 'Market closed or resolved' : 'Stake NO'"
+              >
                 Stake NO
               </button>
             </div>
@@ -464,7 +623,7 @@ watch(account, async () => {
             </button>
           </div>
 
-          <div v-if="market.resolved" class="claim-block">
+          <div v-if="market.resolved && !isAdmin" class="claim-block">
             <span v-if="market.claimed" class="claimed-pill">Reward claimed</span>
             <button v-else class="primary-button" @click="claimMarketReward(market.id)">
               Claim reward
@@ -474,7 +633,40 @@ watch(account, async () => {
       </div>
     </section>
 
-    <p class="status-line" v-if="status">{{ status }}</p>
+    <div
+      v-if="account && showNotificationPanel"
+      class="notif-overlay"
+      @click.self="closeNotifications"
+    >
+      <section class="notif-modal" role="dialog" aria-modal="true" aria-label="Notification history">
+        <div class="notif-head">
+          <strong>Notification history</strong>
+          <div class="notif-actions">
+            <button class="ghost-button" @click="clearNotificationHistory" :disabled="notifications.length === 0">
+              Delete history
+            </button>
+            <button class="ghost-button" @click="closeNotifications" aria-label="Close notification history">
+              Close
+            </button>
+          </div>
+        </div>
+
+        <p v-if="notifications.length === 0" class="notif-empty">No notifications yet.</p>
+
+        <ul v-else class="notif-list">
+          <li v-for="entry in notifications" :key="entry.id" class="notif-item">
+            <span class="notif-dot" :class="`tone-${entry.tone}`"></span>
+            <div class="notif-body">
+              <p>{{ entry.message }}</p>
+              <span>{{ formatNotificationTime(entry.createdAt) }}</span>
+            </div>
+          </li>
+        </ul>
+      </section>
+    </div>
+
+    <div v-if="toastVisible" class="toast-popup">{{ toastMessage }}</div>
+    <!-- <p class="status-line" v-if="status">{{ status }}</p> -->
   </main>
 </template>
 
@@ -828,6 +1020,144 @@ textarea:focus {
 .claimed-pill {
   background: rgba(34, 197, 94, 0.14);
   color: #8df0ab;
+}
+
+.wallet-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bell-button {
+  position: relative;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.75);
+  color: #edf3ff;
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.bell-badge {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: #fb7185;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.notif-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.66);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 980;
+}
+
+.notif-modal {
+  width: min(760px, 100%);
+  max-height: min(78vh, 720px);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 16px;
+  background: rgba(3, 9, 22, 0.96);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  padding: 14px;
+  overflow: hidden;
+}
+
+.notif-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.notif-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.notif-empty {
+  margin: 12px 0 4px;
+  color: #a8b7cd;
+}
+
+.notif-list {
+  list-style: none;
+  padding: 0;
+  margin: 12px 0 0;
+  display: grid;
+  gap: 8px;
+  max-height: min(62vh, 580px);
+  overflow-y: auto;
+}
+
+.notif-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: rgba(15, 23, 42, 0.64);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 10px;
+  padding: 8px;
+}
+
+.notif-dot {
+  margin-top: 4px;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.tone-info {
+  background: #8edcf8;
+}
+
+.tone-success {
+  background: #8df0ab;
+}
+
+.tone-error {
+  background: #fda4af;
+}
+
+.notif-body p {
+  margin: 0;
+  color: #edf3ff;
+}
+
+.notif-body span {
+  margin-top: 4px;
+  display: inline-block;
+  font-size: 0.78rem;
+  color: #8ea0bb;
+}
+
+.toast-popup {
+  position: fixed;
+  right: 18px;
+  bottom: 24px;
+  background: linear-gradient(135deg, #fbbf24, #fb7185);
+  color: #0b1020;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-weight: 700;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+  z-index: 999;
 }
 
 .status-line {
