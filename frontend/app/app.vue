@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { formatEther } from 'ethers'
-import Addresses from './contracts/addresses.localhost.json'
+import Addresses from './contracts/addresses.json'
 
 type OutcomeView = {
   id: number
