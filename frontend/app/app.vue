@@ -240,6 +240,28 @@ const canStakeOnMarket = (market: MarketView) => {
   return amount !== null && !marketIsInactive(market)
 }
 
+const canClaimReward = (market: MarketView) => {
+  if (!account.value || !market.resolved || market.claimed || isAdmin.value) {
+    return false
+  }
+
+  const userAddress = account.value.toLowerCase()
+
+  const userStake = market.stakers.find(
+    (staker) => staker.address.toLowerCase() === userAddress
+  )
+
+  if (!userStake) {
+    return false
+  }
+
+  const winningStake = userStake.outcomes.find(
+    (outcome) => outcome.id === Number(market.winningOutcomeId)
+  )
+
+  return (winningStake?.amount ?? 0n) > 0n
+}
+
 const stakeUnavailableReason = (market: MarketView) => {
   if (marketIsInactive(market)) {
     return 'Market closed or resolved'
@@ -724,9 +746,16 @@ watch(account, async (nextAccount, previousAccount) => {
             </button>
           </div>
 
-          <div v-if="market.resolved && !isAdmin" class="claim-block">
+          <div
+            v-if="market.resolved && !isAdmin && (market.claimed || canClaimReward(market))"
+            class="claim-block"
+          >
             <span v-if="market.claimed" class="claimed-pill">Reward claimed</span>
-            <button v-else class="primary-button" @click="claimMarketReward(market.id)">
+            <button
+              v-else-if="canClaimReward(market)"
+              class="primary-button"
+              @click="claimMarketReward(market.id)"
+            >
               Claim reward
             </button>
           </div>
