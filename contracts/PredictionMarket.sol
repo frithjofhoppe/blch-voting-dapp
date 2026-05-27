@@ -22,6 +22,8 @@ contract PredictionMarket {
     mapping(uint256 => string[]) private marketOutcomes;
     mapping(uint256 => mapping(uint256 => uint256)) public outcomePools;
     mapping(uint256 => mapping(address => mapping(uint256 => uint256))) public userStakes;
+    mapping(uint256 => address[]) private marketStakers;
+    mapping(uint256 => mapping(address => bool)) private marketStakerSeen;
     mapping(uint256 => mapping(address => bool)) public claimed;
 
     event MarketCreated(
@@ -109,6 +111,11 @@ contract PredictionMarket {
 
         bool success = voteToken.transferFrom(msg.sender, address(this), amount);
         require(success, "Token transfer failed");
+
+        if (!marketStakerSeen[marketId][msg.sender]) {
+            marketStakerSeen[marketId][msg.sender] = true;
+            marketStakers[marketId].push(msg.sender);
+        }
 
         userStakes[marketId][msg.sender][outcomeId] += amount;
         outcomePools[marketId][outcomeId] += amount;
@@ -239,5 +246,10 @@ contract PredictionMarket {
         require(outcomeId < marketOutcomes[marketId].length, "Invalid outcome");
 
         return userStakes[marketId][user][outcomeId];
+    }
+
+    function getMarketStakers(uint256 marketId) external view returns (address[] memory) {
+        require(marketId < markets.length, "Invalid market");
+        return marketStakers[marketId];
     }
 }

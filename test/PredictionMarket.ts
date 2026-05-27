@@ -77,6 +77,31 @@ describe("PredictionMarket", function () {
     expect(await predictionMarket.getUserStake(0, traderA.address, 0)).to.equal(stakeAmount);
   });
 
+  it("tracks unique stakers once per market", async function () {
+    const { voteToken, predictionMarket, traderA, traderB } = await createYesNoMarket();
+    const marketAddress = await predictionMarket.getAddress();
+
+    const yesStake = ethers.parseEther("4");
+    const noStake = ethers.parseEther("6");
+
+    await voteToken.connect(traderA).claimFaucet();
+    await voteToken.connect(traderB).claimFaucet();
+
+    await voteToken.connect(traderA).approve(marketAddress, yesStake + noStake);
+    await voteToken.connect(traderB).approve(marketAddress, noStake);
+
+    await predictionMarket.connect(traderA).stake(0, 0, yesStake);
+    await predictionMarket.connect(traderA).stake(0, 1, noStake);
+    await predictionMarket.connect(traderB).stake(0, 1, noStake);
+
+    const stakers = await predictionMarket.getMarketStakers(0);
+
+    expect(stakers).to.deep.equal([traderA.address, traderB.address]);
+    expect(await predictionMarket.getUserStake(0, traderA.address, 0)).to.equal(yesStake);
+    expect(await predictionMarket.getUserStake(0, traderA.address, 1)).to.equal(noStake);
+    expect(await predictionMarket.getUserStake(0, traderB.address, 1)).to.equal(noStake);
+  });
+
   it("rejects staking without approval", async function () {
     const { voteToken, predictionMarket, traderA } = await createYesNoMarket();
     const stakeAmount = ethers.parseEther("10");

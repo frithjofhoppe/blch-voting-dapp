@@ -18,6 +18,14 @@ type MarketSummary = {
     pool: bigint
     probabilityBps: bigint
   }>
+  stakers: Array<{
+    address: string
+    total: bigint
+    outcomes: Array<{
+      id: number
+      amount: bigint
+    }>
+  }>
 }
 
 export const useContracts = () => {
@@ -120,6 +128,20 @@ export const useContracts = () => {
     return await predictionMarket.getOutcome(marketId, outcomeId)
   }
 
+  const getUserStake = async (
+    marketId: bigint | number,
+    user: string,
+    outcomeId: bigint | number
+  ) => {
+    const predictionMarket = await getPredictionMarketContract()
+    return await predictionMarket.getUserStake(marketId, user, outcomeId)
+  }
+
+  const getMarketStakers = async (marketId: bigint | number) => {
+    const predictionMarket = await getPredictionMarketContract()
+    return await predictionMarket.getMarketStakers(marketId)
+  }
+
   const hasClaimedReward = async (marketId: bigint | number, user: string) => {
     const predictionMarket = await getPredictionMarketContract()
     return await predictionMarket.claimed(marketId, user)
@@ -133,6 +155,8 @@ export const useContracts = () => {
       const market = await getMarket(marketId)
       const outcomeCount = await getOutcomeCount(marketId)
       const outcomes: MarketSummary['outcomes'] = []
+      const stakerAddresses = await getMarketStakers(marketId)
+      const stakers: MarketSummary['stakers'] = []
 
       for (let outcomeId = 0n; outcomeId < outcomeCount; outcomeId += 1n) {
         const outcome = await getOutcome(marketId, outcomeId)
@@ -142,6 +166,21 @@ export const useContracts = () => {
           name: outcome[0],
           pool: outcome[1],
           probabilityBps: outcome[2],
+        })
+      }
+
+      for (const address of stakerAddresses) {
+        const stakes = await Promise.all(
+          outcomes.map(async (outcome) => ({
+            id: outcome.id,
+            amount: await getUserStake(marketId, address, outcome.id),
+          }))
+        )
+
+        stakers.push({
+          address,
+          total: stakes.reduce((sum, stake) => sum + stake.amount, 0n),
+          outcomes: stakes,
         })
       }
 
@@ -155,6 +194,7 @@ export const useContracts = () => {
         winningOutcomeId: market[5],
         totalPool: market[6],
         outcomes,
+        stakers,
       })
     }
 
@@ -176,6 +216,8 @@ export const useContracts = () => {
     getMarket,
     getOutcomeCount,
     getOutcome,
+    getUserStake,
+    getMarketStakers,
     hasClaimedReward,
     getMarkets,
     parseEther,

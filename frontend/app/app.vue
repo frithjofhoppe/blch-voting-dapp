@@ -19,6 +19,14 @@ type MarketView = {
   winningOutcomeId: bigint
   totalPool: bigint
   outcomes: OutcomeView[]
+  stakers: Array<{
+    address: string
+    total: bigint
+    outcomes: Array<{
+      id: number
+      amount: bigint
+    }>
+  }>
   claimed: boolean
 }
 
@@ -196,6 +204,11 @@ const winningOutcomeName = (market: MarketView) => {
   return outcome?.name ?? 'Unknown'
 }
 
+const outcomeName = (market: MarketView, outcomeId: number) => {
+  const outcome = market.outcomes.find((candidate) => candidate.id === outcomeId)
+  return outcome?.name ?? `Outcome ${outcomeId}`
+}
+
 const marketIsInactive = (market: MarketView) => {
   return market.resolved || marketStatus(market) === 'Closed'
 }
@@ -211,6 +224,41 @@ const parseStakeAmount = (marketId: number) => {
   }
 
   return parseEther(rawValue)
+}
+
+const getStakeAmount = (marketId: number) => {
+  try {
+    return parseStakeAmount(marketId)
+  } catch {
+    return null
+  }
+}
+
+const canStakeOnMarket = (market: MarketView) => {
+  const amount = getStakeAmount(market.id)
+
+  return amount !== null && !marketIsInactive(market)
+}
+
+const stakeUnavailableReason = (market: MarketView) => {
+  if (marketIsInactive(market)) {
+    return 'Market closed or resolved'
+  }
+
+  const amount = getStakeAmount(market.id)
+  if (!amount) {
+    return 'Enter a stake amount'
+  }
+
+  if (voteBalance.value < amount) {
+    return 'Insufficient VOTE balance. Claim the faucet first.'
+  }
+
+  if (allowance.value < amount) {
+    return 'Approve VOTE first'
+  }
+
+  return 'Stake YES or NO'
 }
 
 const refreshMarkets = async () => {
@@ -252,6 +300,17 @@ const refreshDashboard = async () => {
       getAllowance(account.value),
     ])
 
+    // Debug: capture raw values and account to help diagnose post-approve refresh issue
+    try {
+      console.debug('refreshDashboard', {
+        account: account.value,
+        rawBalance: typeof balance === 'object' ? String(balance) : balance,
+        rawAllowance: typeof currentAllowance === 'object' ? String(currentAllowance) : currentAllowance,
+      })
+    } catch (e) {
+      console.debug('refreshDashboard: debug logging failed', e)
+    }
+
     voteBalance.value = balance
     allowance.value = currentAllowance
 
@@ -278,11 +337,16 @@ const claimFaucetAction = async () => {
   try {
     status.value = 'Claiming faucet...'
     const tx = await claimFaucet()
+    console.debug('claimFaucetAction: tx-submitted', tx)
     await tx.wait()
+    console.debug('claimFaucetAction: tx-mined', tx)
     status.value = 'Faucet claimed.'
     await refreshDashboard()
   } catch (error) {
-    status.value = error instanceof Error ? error.message : 'Could not claim faucet'
+    const message = error instanceof Error ? error.message : 'Could not claim faucet'
+    status.value = message.toLowerCase().includes('already claimed')
+      ? 'This wallet already claimed faucet tokens.'
+      : message
   }
 }
 
@@ -333,7 +397,9 @@ const approveForMarket = async (marketId: number) => {
     const amount = parseStakeAmount(marketId)
     status.value = 'Approving VOTE...'
     const tx = await approvePredictionMarket(amount)
+    console.debug('approveForMarket: tx-submitted', { marketId, amount: String(amount), tx })
     await tx.wait()
+    console.debug('approveForMarket: tx-mined', tx)
     status.value = 'Allowance approved.'
     await refreshDashboard()
   } catch (error) {
@@ -344,6 +410,11 @@ const approveForMarket = async (marketId: number) => {
 const stakeOnMarket = async (marketId: number, outcomeId: number) => {
   try {
     const amount = parseStakeAmount(marketId)
+
+    if (voteBalance.value < amount) {
+      status.value = 'Not enough VOTE. Claim the faucet first.'
+      return
+    }
 
     if (allowance.value < amount) {
       status.value = 'Approve VOTE first.'
@@ -461,8 +532,8 @@ watch(account, async (nextAccount, previousAccount) => {
           <p><span>Allowance</span><strong>{{ formatToken(allowance) }}</strong></p>
         </div>
 
-        <button v-if="account && !isAdmin" class="secondary-button" @click="claimFaucetAction">
-          Claim 1000 VOTE
+        <button v-if="account" class="secondary-button" @click="claimFaucetAction">
+          Claim 1000 VOTE (once per wallet)
         </button>
       </div>
     </section>
@@ -573,6 +644,32 @@ watch(account, async (nextAccount, previousAccount) => {
             </div>
           </div>
 
+          <div class="stake-breakdown">
+            <div class="section-head stake-breakdown-head">
+              <strong>Stake breakdown</strong>
+              <span class="hint">{{ market.stakers.length }} stakers loaded from chain</span>
+            </div>
+
+            <div v-if="market.stakers.length === 0" class="empty-state compact-empty">
+              No one has staked on this market yet.
+            </div>
+
+            <div v-else class="stake-list">
+              <div v-for="staker in market.stakers" :key="staker.address" class="stake-row">
+                <div class="stake-row-head">
+                  <strong>{{ staker.address }}</strong>
+                  <span>{{ formatToken(staker.total) }} VOTE</span>
+                </div>
+
+                <div class="stake-row-outcomes">
+                  <span v-for="entry in staker.outcomes" :key="`${staker.address}-${entry.id}`">
+                    {{ outcomeName(market, entry.id) }}: {{ formatToken(entry.amount) }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div v-if="!isAdmin" class="stake-block">
             <label>
               <span>Stake amount</span>
@@ -598,20 +695,24 @@ watch(account, async (nextAccount, previousAccount) => {
               <button
                 class="primary-button"
                 @click="stakeOnMarket(market.id, 0)"
-                :disabled="marketIsInactive(market)"
-                :title="marketIsInactive(market) ? 'Market closed or resolved' : 'Stake YES'"
+                :disabled="!canStakeOnMarket(market)"
+                :title="stakeUnavailableReason(market)"
               >
                 Stake YES
               </button>
               <button
                 class="primary-button"
                 @click="stakeOnMarket(market.id, 1)"
-                :disabled="marketIsInactive(market)"
-                :title="marketIsInactive(market) ? 'Market closed or resolved' : 'Stake NO'"
+                :disabled="!canStakeOnMarket(market)"
+                :title="stakeUnavailableReason(market)"
               >
                 Stake NO
               </button>
             </div>
+
+            <p v-if="!canStakeOnMarket(market)" class="hint">
+              {{ stakeUnavailableReason(market) }}
+            </p>
           </div>
 
           <div v-if="isAdmin && !market.resolved" class="resolve-block">
@@ -997,13 +1098,94 @@ textarea:focus {
   margin-top: 14px;
 }
 
+.stake-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.7), rgba(15, 23, 42, 0.5));
+}
+
+.stake-breakdown-head {
+  align-items: flex-start;
+}
+
+.stake-breakdown-head strong {
+  font-size: 0.98rem;
+}
+
+.stake-list {
+  display: grid;
+  gap: 10px;
+}
+
+.stake-row {
+  display: grid;
+  gap: 10px;
+  padding: 12px 13px;
+  border-radius: 16px;
+  background: rgba(2, 6, 23, 0.28);
+  border: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.stake-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stake-row-head strong {
+  font-size: 0.94rem;
+  word-break: break-word;
+}
+
+.stake-row-head span {
+  flex-shrink: 0;
+  color: #f5d06a;
+  font-weight: 700;
+}
+
+.stake-row-outcomes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.stake-row-outcomes span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  color: #dbe7f7;
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.stake-row-outcomes span::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: #fbbf24;
+  flex-shrink: 0;
+}
+
 .outcome-head span {
   color: #f5d06a;
   font-weight: 700;
 }
 
 .stake-block {
-  margin-top: 14px;
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
 }
 
 .stake-block label {
