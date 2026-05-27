@@ -1,6 +1,6 @@
 {
   "network": "sepolia",
-  "voteToken": "0xb926E465c197dca559e637Cc248Ae3C4F991469D",
-  "predictionMarket": "0x7E00FEE2Ed29282AC34fFc29D15f7c712BAE1b3B",
+  "voteToken": "0x63175bFf6BBcA9C201f810D5D7F17A93dDfF0031",
+  "predictionMarket": "0x3c9755099959Fc68b8BceBA1D6a9E4Dc2076601d",
   "admin": "0x0F407FA744f07eCf022b6052625F84C08412a473"
 }
