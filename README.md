@@ -2,6 +2,8 @@
 
 This repository contains a Hardhat local chain, deployment scripts, and a Nuxt frontend.
 
+> The deyployed version [Azure Smart Contract App](https://blch-group1-dqfccbhcg3ahgrh4.canadacentral-01.azurewebsites.net/)
+
 ## Prerequisites
 
 Install these first:
